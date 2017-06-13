@@ -1,0 +1,229 @@
+# This file is part of libertine linux's package ofed_mellanox. It is subject to the license terms in the COPYRIGHT file found in the top-level directory of this distribution and at https://raw.githubusercontent.com/libertine-linux-packages/ofed_mellanox/master/COPYRIGHT. No part of libertine linux's package ofed_mellanox, including this file, may be copied, modified, propagated, or distributed except according to the terms contained in the COPYRIGHT file.
+# Copyright © 2016 The developers of libertine linux's package ofed_mellanox. See the COPYRIGHT file in the top-level directory of this distribution and at https://raw.githubusercontent.com/libertine-linux-packages/ofed_mellanox/master/COPYRIGHT.
+
+
+variant=upstream
+
+depends build_ccache
+build_needs ccache
+
+depends build_gnumake
+build_needs make
+
+depends build_slibtool
+build_needs clibtool-static libtoolize realpath
+
+depends build_perl
+build_needs perl
+
+depends build_autoconf
+build_needs autoconf autoheader autom4te autoreconf autoscan autoupdate ifnames
+
+depends build_automake
+build_needs automake aclocal
+
+depends build_gnum4
+build_needs m4
+
+depends build_musl_cross_make_host
+build_needs "$libertine_host"-cc "$libertine_host"-gcc "$libertine_host"-ar "$libertine_host"-ld "$libertine_host"-ranlib "$libertine_host"-strip "$libertine_host"-c++ "$libertine_host"-g++
+
+depends build_busybox
+build_needs sort dirname install expr ls sleep
+
+depends build_file
+build_needs file
+
+depends build_paxctl
+build_needs paxctl
+
+depends build_bash
+build_needs bash
+
+build_needs tar rm sed mkdir cp mv cat tail
+libertine_compile_ofed_mellanox()
+{
+	local tarballExtractedFolderVersion=4.0-2.0.2.0
+	local tarballSourceVersion=debian-"$tarballExtractedFolderVersion"
+	local ibVerbsVersion=1.2.1mlnx1
+	local mlx5ProviderVersion=1.2.1mlnx1
+	local rxeProviderVersion=1.0.0
+	local ofedKernelVersion=4.0
+	
+	local downloadUrl="http://www.mellanox.com/downloads/ofed/MLNX_OFED-${tarballExtractedFolderVersion}/MLNX_OFED_SRC-${tarballSourceVersion}.tgz"
+	
+	pushd "$(libertine_public_sourcePath)"
+		
+		local originalSourceTarball=MLNX_OFED_SRC-"$tarballSourceVersion".tgz
+		local tarballExtractedFolder=MLNX_OFED_SRC-"$tarballExtractedFolderVersion"
+		
+		if [ ! -e "$originalSourceTarball" ]; then
+			printf '\n\n\nPLEASE DOWNLOAD THE ORIGINAL tarball `%s` from Mellanox.\nWe obtained the copy we built against from %s\n.Place it as is (ie with .tgz extension) in `%s/upstream`.\nWe are not permitted to distribute it.\n\n\n' "$originalSourceTarball" "$downloadUrl" "$(libertine_public_originalPackagePath)" 1>&2
+			exit 90
+		fi
+
+		local destinationFolderPath="$(libertine_public_outputInitramfsPath)"/usr/bin
+		mkdir -m 0755 -p "$destinationFolderPath"
+				
+		tar -xzf "$originalSourceTarball"
+		
+		# Done because this can occupy 50Mb+!
+		rm -rf "$originalSourceTarball"
+		
+		pushd "$tarballExtractedFolder"/SOURCES
+			
+			
+			# (1) Compile libibverbs
+			tar -xzf libibverbs_"$ibVerbsVersion".orig.tar.gz
+			pushd libibverbs-"$ibVerbsVersion"
+				
+				rm -rf autom4te.cache
+				rm -rf configure
+				rm -rf Makefile.in
+				
+				sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
+				
+				pushd config
+					libertine_public_autoconf_replaceWithKnownVersionOfConfigGuess ./config
+					libertine_public_autoconf_replaceWithKnownVersionOfConfigSub ./config
+					libertine_public_autoconf_replaceWithKnownVersionOfInstallSh ./config
+					libertine_public_autoconf_replaceWithKnownVersionOfCompile ./config
+					libertine_public_autoconf_replaceWithKnownVersionOfMissing ./config
+				popd
+				
+				libtoolize --install --force --verbose
+				autoreconf --install --force --verbose
+				
+				libertine_public_autoconf_modernAutoconfConfigure \
+					--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install \
+					--with-resolve-neigh=no
+
+				libertine_public_make
+
+				libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
+								
+				local binary
+				for binary in ibv_devinfo ibv_devices
+				do
+					cp "$(libertine_public_outputHostSysrootPath)"/usr/bin/"$binary" "$destinationFolderPath"
+					libertine_public_stripAndSecureBinary "$destinationFolderPath"/"$binary"
+				done
+				
+				# Also supplies the binaries:-
+				
+				# ibv_asyncwatch
+				# ibv_cc_pingpong
+				# ibv_dcini
+				# ibv_dctgt
+				# ibv_intf
+				# ibv_polldcinfo
+				# ibv_rc_pingpong
+				# ibv_shared_mr
+				# ibv_srq_pingpong
+				# ibv_task_pingpong
+				# ibv_uc_pingpong
+				# ibv_ud_pingpong
+				# ibv_umr
+				# ibv_xsrq_pingpong
+				
+			popd
+			
+			# (2) Install libibverbs so that provider dependencies can find it
+			cp -a -f -H "$(libertine_public_outputHostSysrootPath)"/. "$(libertine_public_inputSysrootPath)"/
+			
+			# Compiling librxe requires a version of Linux after `Aug 4, 2016` which contains include/uapi/rdma/rdma_user_rxe.h
+			# This is partly because infiniband/driver.h barfs
+			
+			# # use rdma/rdma_user_rxe.h from MLNX_OFED
+			# AC_ARG_WITH([ofed-kernel],
+			#             [AC_HELP_STRING([--with-ofed-kernel(=DIR)],
+			#                             [librxe: build MLNX_OFED support, adding DIR/include to the search path for headers])],
+			#             [],
+			#             [with_ofed_kernel=/usr/src/ofa_kernel]
+			#             )
+			# if test -f "$with_ofed_kernel/include/uapi/rdma/rdma_user_rxe.h"; then
+			#     OFED_KERNEL=$with_ofed_kernel
+			# elif test -f "$with_ofed_kernel/default/include/uapi/rdma/rdma_user_rxe.h"; then
+			#     OFED_KERNEL=$with_ofed_kernel/default
+			# elif test -f "$with_ofed_kernel/ppc64/include/uapi/rdma/rdma_user_rxe.h"; then
+			#     OFED_KERNEL=$with_ofed_kernel/ppc64
+			# else
+			#     AC_MSG_ERROR([OFED kernel sources were not found under $with_ofed_kernel])
+			# fi
+			# CFLAGS="$CFLAGS -I$OFED_KERNEL/include -I$OFED_KERNEL/include/uapi"
+			# CPPFLAGS="$CPPFLAGS -I$OFED_KERNEL/include -I$OFED_KERNEL/include/uapi"
+			
+			# (4) Compile libibverbs provider librxe: SoftRoCE
+			tar -xzf mlnx-ofed-kernel_"$ofedKernelVersion".orig.tar.gz
+			libertine_public_populateInputSysroot
+			tar -xzf librxe_"$rxeProviderVersion".orig.tar.gz
+			pushd librxe-"$rxeProviderVersion"
+				
+				rm -rf autom4te.cache
+				rm -rf configure
+				rm -rf Makefile.in
+				
+				sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
+				
+				cp -R ../libibverbs-"$ibVerbsVersion"/config .
+				cp -R ../libibverbs-"$ibVerbsVersion"/build-aux .
+				cp -R ../libibverbs-"$ibVerbsVersion"/m4 .
+				
+				mv Makefile.am Makefile.am.orig
+				{
+					printf '%s\n' 'ACLOCAL_AMFLAGS = -I config'
+					cat Makefile.am.orig
+				} >Makefile.am
+				
+				libtoolize --install --force --verbose
+				autoreconf --install --force --verbose
+				
+				# --repackage-script
+				CPPFLAGS=-I"$(libertine_public_inputSysrootPath)"/usr/include CFLAGS=-I"$(libertine_public_inputSysrootPath)"/usr/include libertine_public_autoconf_modernAutoconfConfigure \
+					--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install \
+					--with-ofed-kernel=../mlnx-ofed-kernel-"$ofedKernelVersion"
+				
+				libertine_public_make
+
+				libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
+				
+			popd
+			
+			
+			# (3) Compile libibverbs provider libmlx5: Mellanox Contect-X 4+
+			tar -xzf libmlx5_"$mlx5ProviderVersion".orig.tar.gz
+			pushd libmlx5-"$mlx5ProviderVersion"
+				
+				rm -rf autom4te.cache
+				rm -rf configure
+				rm -rf Makefile.in
+				
+				sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
+				
+				cp -R ../libibverbs-"$ibVerbsVersion"/config .
+				cp -R ../libibverbs-"$ibVerbsVersion"/build-aux .
+				cp -R ../libibverbs-"$ibVerbsVersion"/m4 .
+				
+				mv Makefile.am Makefile.am.orig
+				{
+					printf '%s\n' 'ACLOCAL_AMFLAGS = -I config'
+					cat Makefile.am.orig
+				} >Makefile.am
+				
+				autoreconf --install --force --verbose
+				
+				sed -i -e 's;#!/bin/bash;#!/usr/bin/env bash\nset ;g' scripts/expose_libmlx5_headers/libmlx_expose_headers
+				
+				libertine_public_autoconf_modernAutoconfConfigure \
+					--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install
+				
+				libertine_public_make
+
+				libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
+				
+			popd
+		
+		popd
+		
+	popd	
+}
