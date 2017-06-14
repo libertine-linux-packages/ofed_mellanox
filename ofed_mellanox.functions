@@ -52,6 +52,34 @@ libertine_compile_ofed_mellanox()
 	
 	local downloadUrl="http://www.mellanox.com/downloads/ofed/MLNX_OFED-${tarballExtractedFolderVersion}/MLNX_OFED_SRC-${tarballSourceVersion}.tgz"
 	
+	if core_variable_isUnset libertine_ofed_mellanox_provider; then
+		libertine_ofed_mellanox_provider='SoftRoCE'
+	fi
+
+	case "$libertine_ofed_mellanox_provider" in
+		
+		Mellanox5)
+			local buildMellanox5=true
+			local buildSoftRoCE=false
+		;;
+		
+		SoftRoCE)
+			local buildMellanox5=false
+			local buildSoftRoCE=true
+		;;
+		
+		All)
+			local buildMellanox5=true
+			local buildSoftRoCE=true
+		;;
+		
+		*)
+			printf 'libibverbs provider %s\n is unsupported\n' "$libertine_ofed_mellanox_provider"
+			exit 90
+		;;
+		
+	esac
+		
 	pushd "$(libertine_public_sourcePath)"
 		
 		local originalSourceTarball=MLNX_OFED_SRC-"$tarballSourceVersion".tgz
@@ -59,7 +87,7 @@ libertine_compile_ofed_mellanox()
 		
 		if [ ! -e "$originalSourceTarball" ]; then
 			printf '\n\n\nPLEASE DOWNLOAD THE ORIGINAL tarball `%s` from Mellanox.\nWe obtained the copy we built against from %s\n.Place it as is (ie with .tgz extension) in `%s/upstream`.\nWe are not permitted to distribute it.\n\n\n' "$originalSourceTarball" "$downloadUrl" "$(libertine_public_originalPackagePath)" 1>&2
-			exit 90
+			exit 91
 		fi
 
 		local destinationFolderPath="$(libertine_public_outputInitramfsPath)"/usr/bin
@@ -71,7 +99,6 @@ libertine_compile_ofed_mellanox()
 		rm -rf "$originalSourceTarball"
 		
 		pushd "$tarballExtractedFolder"/SOURCES
-			
 			
 			# (1) Compile libibverbs
 			tar -xzf libibverbs_"$ibVerbsVersion".orig.tar.gz
@@ -131,98 +158,80 @@ libertine_compile_ofed_mellanox()
 			# (2) Install libibverbs so that provider dependencies can find it
 			cp -a -f -H "$(libertine_public_outputHostSysrootPath)"/. "$(libertine_public_inputSysrootPath)"/
 			
-			# Compiling librxe requires a version of Linux after `Aug 4, 2016` which contains include/uapi/rdma/rdma_user_rxe.h
-			# This is partly because infiniband/driver.h barfs
-			
-			# # use rdma/rdma_user_rxe.h from MLNX_OFED
-			# AC_ARG_WITH([ofed-kernel],
-			#             [AC_HELP_STRING([--with-ofed-kernel(=DIR)],
-			#                             [librxe: build MLNX_OFED support, adding DIR/include to the search path for headers])],
-			#             [],
-			#             [with_ofed_kernel=/usr/src/ofa_kernel]
-			#             )
-			# if test -f "$with_ofed_kernel/include/uapi/rdma/rdma_user_rxe.h"; then
-			#     OFED_KERNEL=$with_ofed_kernel
-			# elif test -f "$with_ofed_kernel/default/include/uapi/rdma/rdma_user_rxe.h"; then
-			#     OFED_KERNEL=$with_ofed_kernel/default
-			# elif test -f "$with_ofed_kernel/ppc64/include/uapi/rdma/rdma_user_rxe.h"; then
-			#     OFED_KERNEL=$with_ofed_kernel/ppc64
-			# else
-			#     AC_MSG_ERROR([OFED kernel sources were not found under $with_ofed_kernel])
-			# fi
-			# CFLAGS="$CFLAGS -I$OFED_KERNEL/include -I$OFED_KERNEL/include/uapi"
-			# CPPFLAGS="$CPPFLAGS -I$OFED_KERNEL/include -I$OFED_KERNEL/include/uapi"
+			# (3) Compile libibverbs provider libmlx5: Mellanox Contect-X 4+
+			if $buildMellanox5; then
+				tar -xzf libmlx5_"$mlx5ProviderVersion".orig.tar.gz
+				pushd libmlx5-"$mlx5ProviderVersion"
+				
+					rm -rf autom4te.cache
+					rm -rf configure
+					rm -rf Makefile.in
+				
+					sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
+				
+					cp -R ../libibverbs-"$ibVerbsVersion"/config .
+					cp -R ../libibverbs-"$ibVerbsVersion"/build-aux .
+					cp -R ../libibverbs-"$ibVerbsVersion"/m4 .
+				
+					mv Makefile.am Makefile.am.orig
+					{
+						printf '%s\n' 'ACLOCAL_AMFLAGS = -I config'
+						cat Makefile.am.orig
+					} >Makefile.am
+				
+					autoreconf --install --force --verbose
+				
+					sed -i -e 's;#!/bin/bash;#!/usr/bin/env bash\nset ;g' scripts/expose_libmlx5_headers/libmlx_expose_headers
+				
+					libertine_public_autoconf_modernAutoconfConfigure \
+						--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install
+				
+					libertine_public_make
+
+					libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
+				
+				popd
+			fi
 			
 			# (4) Compile libibverbs provider librxe: SoftRoCE
-			tar -xzf mlnx-ofed-kernel_"$ofedKernelVersion".orig.tar.gz
-			libertine_public_populateInputSysroot
-			tar -xzf librxe_"$rxeProviderVersion".orig.tar.gz
-			pushd librxe-"$rxeProviderVersion"
+			if $buildSoftRoCE; then
+				libertine_public_populateInputSysroot
+				tar -xzf librxe_"$rxeProviderVersion".orig.tar.gz
+				pushd librxe-"$rxeProviderVersion"
 				
-				rm -rf autom4te.cache
-				rm -rf configure
-				rm -rf Makefile.in
+					rm -rf autom4te.cache
+					rm -rf configure
+					rm -rf Makefile.in
 				
-				sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
+					sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
 				
-				cp -R ../libibverbs-"$ibVerbsVersion"/config .
-				cp -R ../libibverbs-"$ibVerbsVersion"/build-aux .
-				cp -R ../libibverbs-"$ibVerbsVersion"/m4 .
+					cp -R ../libibverbs-"$ibVerbsVersion"/config .
+					cp -R ../libibverbs-"$ibVerbsVersion"/build-aux .
+					cp -R ../libibverbs-"$ibVerbsVersion"/m4 .
 				
-				mv Makefile.am Makefile.am.orig
-				{
-					printf '%s\n' 'ACLOCAL_AMFLAGS = -I config'
-					cat Makefile.am.orig
-				} >Makefile.am
+					mv Makefile.am Makefile.am.orig
+					{
+						printf '%s\n' 'ACLOCAL_AMFLAGS = -I config'
+						cat Makefile.am.orig
+					} >Makefile.am
 				
-				libtoolize --install --force --verbose
-				autoreconf --install --force --verbose
+					libtoolize --install --force --verbose
+					autoreconf --install --force --verbose
 				
-				# --repackage-script
-				CPPFLAGS=-I"$(libertine_public_inputSysrootPath)"/usr/include CFLAGS=-I"$(libertine_public_inputSysrootPath)"/usr/include libertine_public_autoconf_modernAutoconfConfigure \
-					--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install \
-					--with-ofed-kernel=../mlnx-ofed-kernel-"$ofedKernelVersion"
+					# Fake OFED kernel
+					cp -R "$(libertine_public_inputSysrootPath)"/usr/include/rdma "$(libertine_public_inputSysrootPath)"/usr/include/uapi
 				
-				libertine_public_make
+					CPPFLAGS=-I"$(libertine_public_inputSysrootPath)"/usr/include CFLAGS=-I"$(libertine_public_inputSysrootPath)"/usr/include libertine_public_autoconf_modernAutoconfConfigure \
+						--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install \
+						--with-ofed-kernel="$(libertine_public_inputSysrootPath)"/usr
+				
+					libertine_public_make
 
-				libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
+					libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
 				
-			popd
+				popd
+			fi
 			
-			
-			# (3) Compile libibverbs provider libmlx5: Mellanox Contect-X 4+
-			tar -xzf libmlx5_"$mlx5ProviderVersion".orig.tar.gz
-			pushd libmlx5-"$mlx5ProviderVersion"
-				
-				rm -rf autom4te.cache
-				rm -rf configure
-				rm -rf Makefile.in
-				
-				sed -i -e 's/AM_CFLAGS = -g -Wall -Werror/AM_CFLAGS = /g' Makefile.am
-				
-				cp -R ../libibverbs-"$ibVerbsVersion"/config .
-				cp -R ../libibverbs-"$ibVerbsVersion"/build-aux .
-				cp -R ../libibverbs-"$ibVerbsVersion"/m4 .
-				
-				mv Makefile.am Makefile.am.orig
-				{
-					printf '%s\n' 'ACLOCAL_AMFLAGS = -I config'
-					cat Makefile.am.orig
-				} >Makefile.am
-				
-				autoreconf --install --force --verbose
-				
-				sed -i -e 's;#!/bin/bash;#!/usr/bin/env bash\nset ;g' scripts/expose_libmlx5_headers/libmlx_expose_headers
-				
-				libertine_public_autoconf_modernAutoconfConfigure \
-					--disable-silent-rules --disable-dependency-tracking --disable-shared --enable-static --enable-fast-install
-				
-				libertine_public_make
-
-				libertine_public_make DESTDIR="$(libertine_public_outputHostSysrootPath)" install
-				
-			popd
-		
 		popd
 		
 	popd	
